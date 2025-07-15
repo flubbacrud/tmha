@@ -642,48 +642,81 @@ HTML_TEMPLATE = """
         function displayResults(data) {
             // Basic info
             const basicInfo = data.basic_info;
-            document.getElementById('basic-info').innerHTML = `
-                <div><strong>Subject:</strong> ${basicInfo.subject}</div>
-                <div><strong>Message ID:</strong> ${basicInfo.message_id}</div>
-                <div><strong>Date:</strong> ${basicInfo.date}</div>
-                <div><strong>From:</strong> ${basicInfo.from}</div>
-                <div><strong>To:</strong> ${basicInfo.to}</div>
-            `;
+            const basicInfoElement = document.getElementById('basic-info');
+            if (basicInfoElement) {
+                basicInfoElement.innerHTML = `
+                    <div><strong>Subject:</strong> ${basicInfo.subject}</div>
+                    <div><strong>Message ID:</strong> ${basicInfo.message_id}</div>
+                    <div><strong>Date:</strong> ${basicInfo.date}</div>
+                    <div><strong>From:</strong> ${basicInfo.from}</div>
+                    <div><strong>To:</strong> ${basicInfo.to}</div>
+                `;
+            }
             
             // Hops
-            const hopsHtml = data.hops.map((hop, index) => `
-                <div class="hop">
-                    <div class="hop-header">Hop ${index + 1}</div>
-                    <div><strong>From:</strong> ${hop.from}</div>
-                    <div><strong>By:</strong> ${hop.by}</div>
-                    <div><strong>Protocol:</strong> ${hop.protocol}</div>
-                    <div><strong>Timestamp:</strong> ${hop.timestamp || 'N/A'}</div>
-                    <div><strong>Delay:</strong> <span class="delay ${getDelayClass(hop.delay_seconds)}">${hop.delay_human || 'N/A'}</span></div>
-                    <div style="margin-top: 10px; font-size: 12px; color: #666;">
-                        <strong>Full header:</strong><br>
-                        <code>${hop.full_line}</code>
+            const hopsElement = document.getElementById('hops');
+            if (hopsElement) {
+                const hopsHtml = data.hops.map((hop, index) => `
+                    <div class="hop">
+                        <div class="hop-header">Hop ${index + 1}</div>
+                        <div><strong>From:</strong> ${hop.from}</div>
+                        <div><strong>By:</strong> ${hop.by}</div>
+                        <div><strong>Protocol:</strong> ${hop.protocol}</div>
+                        <div><strong>Timestamp:</strong> ${hop.timestamp || 'N/A'}</div>
+                        <div><strong>Delay:</strong> <span class="delay ${getDelayClass(hop.delay_seconds)}">${hop.delay_human || 'N/A'}</span></div>
+                        <div style="margin-top: 10px; font-size: 12px; color: #666;">
+                            <strong>Full header:</strong><br>
+                            <code>${hop.full_line}</code>
+                        </div>
                     </div>
-                </div>
-            `).join('');
-            document.getElementById('hops').innerHTML = hopsHtml;
+                `).join('');
+                hopsElement.innerHTML = hopsHtml;
+            }
             
-            // Visualization
-            if (data.visualization) {
-                Plotly.newPlot('visualization', JSON.parse(data.visualization).data, JSON.parse(data.visualization).layout);
+            // Visualization with error handling
+            const visualizationElement = document.getElementById('visualization');
+            const visualizationErrorElement = document.getElementById('visualization-error');
+            
+            if (data.visualization && typeof Plotly !== 'undefined' && visualizationElement) {
+                try {
+                    Plotly.newPlot('visualization', JSON.parse(data.visualization).data, JSON.parse(data.visualization).layout);
+                    if (visualizationErrorElement) {
+                        visualizationErrorElement.style.display = 'none';
+                    }
+                } catch (error) {
+                    console.error('Plotly rendering error:', error);
+                    if (visualizationErrorElement) {
+                        visualizationErrorElement.style.display = 'block';
+                    }
+                }
+            } else {
+                if (visualizationErrorElement) {
+                    visualizationErrorElement.style.display = 'block';
+                }
             }
             
             // Security headers
-            document.getElementById('security-headers').innerHTML = formatHeaders(data.security_headers);
+            const securityHeadersElement = document.getElementById('security-headers');
+            if (securityHeadersElement) {
+                securityHeadersElement.innerHTML = formatHeaders(data.security_headers);
+            }
             
             // X-headers
-            document.getElementById('x-headers').innerHTML = formatHeaders(data.x_headers);
+            const xHeadersElement = document.getElementById('x-headers');
+            if (xHeadersElement) {
+                xHeadersElement.innerHTML = formatHeaders(data.x_headers);
+            }
             
             // Other headers
-            document.getElementById('other-headers').innerHTML = formatHeaders(data.other_headers);
+            const otherHeadersElement = document.getElementById('other-headers');
+            if (otherHeadersElement) {
+                otherHeadersElement.innerHTML = formatHeaders(data.other_headers);
+            }
             
             // Debug information
-            if (data.debug) {
-                document.getElementById('debug-info').innerHTML = `
+            const debugInfoElement = document.getElementById('debug-info');
+            if (data.debug && debugInfoElement) {
+                debugInfoElement.innerHTML = `
                     <div style="background-color: #f8f9fa; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 12px;">
                         <strong>Total Received Headers Found:</strong> ${data.debug.total_received_headers}<br>
                         <strong>Total Hops Generated:</strong> ${data.debug.total_hops}<br>
@@ -693,7 +726,10 @@ HTML_TEMPLATE = """
                 `;
             }
             
-            document.getElementById('results').style.display = 'block';
+            const resultsElement = document.getElementById('results');
+            if (resultsElement) {
+                resultsElement.style.display = 'block';
+            }
         }
         
         function formatHeaders(headers) {
