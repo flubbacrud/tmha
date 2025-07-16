@@ -1,77 +1,14 @@
-#!/usr/bin/env python3
-"""
-Email Header Analyzer
-A web application to analyze email headers and visualize routing information.
-"""
-
+from flask import Flask, request, jsonify, render_template_string
 import re
-import email
 import json
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
-from flask import Flask, render_template_string, request, jsonify
-import plotly.graph_objects as go
-import plotly.utils
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional
 
 app = Flask(__name__)
 
 class EmailHeaderAnalyzer:
     def __init__(self):
-        self.security_headers = {
-            'dkim-signature', 'domainkey-signature', 'authentication-results',
-            'received-spf', 'dmarc-filter', 'arc-authentication-results',
-            'arc-message-signature', 'arc-seal', 'x-ironport-av', 'x-trellix',
-            'x-ms-exchange-organization-authsource', 'x-ms-exchange-organization-authas',
-            'x-cse-connectionguid', 'x-cse-msgguid', 'x-mga-submission'
-        }
-        
-        self.x_headers = set()
-        
-    def parse_received_header(self, received_line: str) -> Dict:
-        """Parse a single Received header line"""
-        # Remove extra whitespace and newlines
-        received_line = re.sub(r'\s+', ' ', received_line.strip())
-        
-        # Extract timestamp - look for semicolon followed by date
-        timestamp = None
-        semicolon_pattern = r';\s*(.+)$'
-        timestamp_match = re.search(semicolon_pattern, received_line)
-        if timestamp_match:
-            timestamp = timestamp_match.group(1).strip()
-        
-        # Extract from server information
-        from_server = 'Unknown'
-        from_pattern = r'from\s+([^\s\(]+)'
-        from_match = re.search(from_pattern, received_line, re.IGNORECASE)
-        if from_match:
-            from_server = from_match.group(1).strip()
-        
-        # Extract by server information
-        by_server = 'Unknown'
-        by_pattern = r'by\s+([^\s\(]+)'
-        by_match = re.search(by_pattern, received_line, re.IGNORECASE)
-        if by_match:
-            by_server = by_match.group(1).strip()
-        
-        # Extract protocol information
-        protocol = 'Unknown'
-        with_pattern = r'with\s+([^\s;]+)'
-        with_match = re.search(with_pattern, received_line, re.IGNORECASE)
-        if with_match:
-            protocol = with_match.group(1).strip()
-        else:
-            via_pattern = r'via\s+([^\s;]+)'
-            via_match = re.search(via_pattern, received_line, re.IGNORECASE)
-            if via_match:
-                protocol = via_match.group(1).strip()
-        
-        return {
-            'from': from_server,
-            'by': by_server,
-            'protocol': protocol,
-            'timestamp': timestamp,
-            'full_line': received_line
-        }
+        pass
     
     def parse_raw_headers_properly(self, raw_headers: str) -> Dict:
         """Parse raw email headers properly handling RFC 2822 folding"""
@@ -135,46 +72,119 @@ class EmailHeaderAnalyzer:
                     headers[header_name] = header_value
         
         return headers
-    
-    def manual_header_parse(self, raw_headers: str) -> Dict:
-        """Manual header parsing as fallback"""
-        headers = {}
-        lines = raw_headers.split('\n')
-        
-        i = 0
-        while i < len(lines):
-            line = lines[i]
+
+    def parse_timestamp(self, timestamp_str: str) -> datetime:
+        """Parse various timestamp formats with timezone handling"""
+        if not timestamp_str:
+            return None
             
-            # Skip empty lines
-            if not line.strip():
-                i += 1
+        # Clean up the timestamp string
+        timestamp_str = timestamp_str.strip()
+        
+        # Common timestamp formats found in email headers
+        formats = [
+            '%a, %d %b %Y %H:%M:%S %z',      # Wed, 15 Nov 2023 14:25:43 +0000
+            '%a, %d %b %Y %H:%M:%S %Z',      # Wed, 15 Nov 2023 14:25:43 UTC
+            '%d %b %Y %H:%M:%S %z',          # 15 Nov 2023 14:25:43 +0000
+            '%d %b %Y %H:%M:%S %Z',          # 15 Nov 2023 14:25:43 UTC
+            '%a, %d %b %Y %H:%M:%S %z (%Z)', # Mon, 7 Jul 2025 08:38:42 +0100 (BST)
+            '%Y-%m-%d %H:%M:%S %z',          # 2023-11-15 14:25:43 +0000
+            '%Y-%m-%d %H:%M:%S',             # 2023-11-15 14:25:43 (no timezone)
+            '%a, %d %b %Y %H:%M:%S',         # Wed, 15 Nov 2023 14:25:43 (no timezone)
+            '%d %b %Y %H:%M:%S',             # 15 Nov 2023 14:25:43 (no timezone)
+        ]
+        
+        # Try each format
+        for fmt in formats:
+            try:
+                parsed_dt = datetime.strptime(timestamp_str, fmt)
+                
+                # If the datetime is offset-naive (no timezone), assume UTC
+                if parsed_dt.tzinfo is None:
+                    parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                
+                return parsed_dt
+                
+            except ValueError:
                 continue
-            
-            # Check if this is a header line (contains ':')
-            if ':' in line and not line.startswith(' ') and not line.startswith('\t'):
-                header_name, header_value = line.split(':', 1)
-                header_name = header_name.strip()
-                header_value = header_value.strip()
-                
-                # Look ahead for continuation lines
-                i += 1
-                while i < len(lines) and (lines[i].startswith(' ') or lines[i].startswith('\t')):
-                    header_value += ' ' + lines[i].strip()
-                    i += 1
-                
-                # Store the header
-                if header_name in headers:
-                    if isinstance(headers[header_name], list):
-                        headers[header_name].append(header_value)
-                    else:
-                        headers[header_name] = [headers[header_name], header_value]
-                else:
-                    headers[header_name] = header_value
-            else:
-                i += 1
         
-        return headers
-    
+        # If standard formats fail, try email.utils.parsedate_tz
+        try:
+            import email.utils
+            parsed_tuple = email.utils.parsedate_tz(timestamp_str)
+            if parsed_tuple:
+                # Convert to datetime
+                timestamp = datetime(*parsed_tuple[:6])
+                
+                # Handle timezone offset (parsedate_tz returns offset in seconds)
+                if parsed_tuple[9] is not None:
+                    offset_seconds = parsed_tuple[9]
+                    tz = timezone(timedelta(seconds=offset_seconds))
+                    timestamp = timestamp.replace(tzinfo=tz)
+                else:
+                    # No timezone info, assume UTC
+                    timestamp = timestamp.replace(tzinfo=timezone.utc)
+                
+                return timestamp
+                
+        except (ValueError, TypeError):
+            pass
+        
+        # Last resort: try to extract just the date/time part and ignore timezone
+        try:
+            # Remove common timezone suffixes and try again
+            clean_str = timestamp_str
+            for tz_suffix in [' GMT', ' UTC', ' +0000', ' +0100', ' +0200', ' -0500', ' EST', ' PST', ' BST']:
+                if clean_str.endswith(tz_suffix):
+                    clean_str = clean_str[:-len(tz_suffix)]
+                    break
+            
+            # Try parsing without timezone
+            for fmt in ['%a, %d %b %Y %H:%M:%S', '%d %b %Y %H:%M:%S']:
+                try:
+                    parsed_dt = datetime.strptime(clean_str, fmt)
+                    # Assume UTC if no timezone info
+                    return parsed_dt.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+                    
+        except Exception:
+            pass
+        
+        return None
+
+    def parse_received_header(self, received_header: str) -> Dict:
+        """Parse a single Received header"""
+        hop = {
+            'from': 'Unknown',
+            'by': 'Unknown', 
+            'protocol': 'Unknown',
+            'timestamp': None,
+            'full_line': received_header
+        }
+        
+        # Extract 'from' server
+        from_match = re.search(r'from\s+([^\s]+)', received_header, re.IGNORECASE)
+        if from_match:
+            hop['from'] = from_match.group(1)
+        
+        # Extract 'by' server  
+        by_match = re.search(r'by\s+([^\s]+)', received_header, re.IGNORECASE)
+        if by_match:
+            hop['by'] = by_match.group(1)
+            
+        # Extract protocol
+        with_match = re.search(r'with\s+([^\s]+)', received_header, re.IGNORECASE)
+        if with_match:
+            hop['protocol'] = with_match.group(1)
+        
+        # Extract timestamp (usually after semicolon)
+        timestamp_match = re.search(r';\s*(.+)$', received_header)
+        if timestamp_match:
+            hop['timestamp'] = timestamp_match.group(1).strip()
+            
+        return hop
+
     def calculate_delays(self, hops: List[Dict]) -> List[Dict]:
         """Calculate delays between hops"""
         if len(hops) < 2:
@@ -215,60 +225,7 @@ class EmailHeaderAnalyzer:
             hops[-1]['delay_human'] = 'N/A'
         
         return hops
-    
-    def parse_timestamp(self, timestamp_str: str) -> Optional[datetime]:
-        """Parse various timestamp formats"""
-        if not timestamp_str:
-            return None
-            
-        timestamp_str = timestamp_str.strip()
-        
-        # Common formats found in email headers
-        formats = [
-            '%a, %d %b %Y %H:%M:%S %z',
-            '%d %b %Y %H:%M:%S %z',
-            '%a, %d %b %Y %H:%M:%S %Z',
-            '%d %b %Y %H:%M:%S %Z',
-            '%a, %d %b %Y %H:%M:%S',
-            '%d %b %Y %H:%M:%S',
-        ]
-        
-        for fmt in formats:
-            try:
-                return datetime.strptime(timestamp_str, fmt)
-            except ValueError:
-                continue
-        
-        # Try removing timezone abbreviation in parentheses
-        paren_pattern = r'\s*\([^)]+\)\s*$'
-        timestamp_clean = re.sub(paren_pattern, '', timestamp_str)
-        if timestamp_clean != timestamp_str:
-            for fmt in formats:
-                try:
-                    return datetime.strptime(timestamp_clean, fmt)
-                except ValueError:
-                    continue
-        
-        # Try extracting just the date/time portion
-        simple_patterns = [
-            r'(\w+,?\s+\d{1,2}\s+\w{3}\s+\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+[+-]\d{4})',
-            r'(\d{1,2}\s+\w{3}\s+\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+[+-]\d{4})',
-            r'(\w+,?\s+\d{1,2}\s+\w{3}\s+\d{4}\s+\d{1,2}:\d{2}:\d{2})',
-            r'(\d{1,2}\s+\w{3}\s+\d{4}\s+\d{1,2}:\d{2}:\d{2})',
-        ]
-        
-        for pattern in simple_patterns:
-            match = re.search(pattern, timestamp_str)
-            if match:
-                simplified_ts = match.group(1)
-                for fmt in formats:
-                    try:
-                        return datetime.strptime(simplified_ts, fmt)
-                    except ValueError:
-                        continue
-        
-        return None
-    
+
     def format_delay(self, seconds: float) -> str:
         """Format delay in human readable format"""
         if seconds < 0:
@@ -279,31 +236,105 @@ class EmailHeaderAnalyzer:
             return f"{seconds/60:.1f}m"
         else:
             return f"{seconds/3600:.1f}h"
-    
+
+    def create_visualization(self, hops: List[Dict]) -> str:
+        """Create a Plotly visualization of email routing delays"""
+        try:
+            import plotly.graph_objects as go
+            import plotly.io as pio
+            
+            # Prepare data for horizontal bar chart
+            hop_labels = []
+            delays = []
+            colors = []
+            delay_texts = []
+            
+            for i, hop in enumerate(hops):
+                # Create hop label
+                hop_label = f"Hop {i+1}<br>{hop['from']}<br>→ {hop['by']}"
+                hop_labels.append(hop_label)
+                
+                # Get delay value (use 0 for missing/null delays for visualization)
+                delay_val = hop.get('delay_seconds', 0) or 0
+                delays.append(delay_val)
+                
+                # Color coding based on delay
+                if delay_val == 0:
+                    colors.append('#28a745')  # Green for no delay/missing
+                elif delay_val < 0:
+                    colors.append('#6c757d')  # Gray for negative (clock skew)
+                elif delay_val < 5:
+                    colors.append('#28a745')  # Green for fast (< 5 seconds)
+                elif delay_val < 30:
+                    colors.append('#ffc107')  # Yellow for moderate (5-30 seconds)
+                elif delay_val < 300:
+                    colors.append('#fd7e14')  # Orange for slow (30s-5min)
+                else:
+                    colors.append('#dc3545')  # Red for very slow (> 5 minutes)
+                
+                # Delay text for display
+                delay_texts.append(hop.get('delay_human', 'N/A'))
+            
+            # Create horizontal bar chart (hops on Y-axis, delays on X-axis)
+            fig = go.Figure(data=[
+                go.Bar(
+                    x=delays,               # DELAYS on X-axis (horizontal)
+                    y=hop_labels,           # HOPS on Y-axis (vertical)
+                    orientation='h',        # Horizontal bars
+                    marker=dict(color=colors),
+                    text=delay_texts,
+                    textposition='auto',
+                    hovertemplate='<b>%{y}</b><br>Delay: %{text}<br>Seconds: %{x}<extra></extra>'
+                )
+            ])
+            
+            # Update layout for horizontal chart
+            fig.update_layout(
+                title='Email Routing Delays',
+                xaxis_title='Delay (seconds)',      # X-axis = delays (horizontal)
+                yaxis_title='Routing Hops',         # Y-axis = hops (vertical)
+                xaxis=dict(type='log' if any(d > 0 for d in delays) else 'linear'),
+                height=max(400, len(hops) * 60),     # Dynamic height
+                margin=dict(l=200, r=50, t=80, b=50), # More left margin for hop labels
+                yaxis=dict(autorange='reversed'),    # Hop 1 at top
+                showlegend=False
+            )
+            
+            # Convert to JSON
+            return pio.to_json(fig)
+            
+        except Exception as e:
+            # Fallback: return empty visualization data
+            return json.dumps({
+                "data": [],
+                "layout": {
+                    "title": "Visualization Error",
+                    "annotations": [{
+                        "text": f"Could not generate chart: {str(e)}",
+                        "showarrow": False,
+                        "x": 0.5,
+                        "y": 0.5
+                    }]
+                }
+            })
+
     def analyze_headers(self, raw_headers: str) -> Dict:
-        """Analyze email headers and return structured data"""
-        # Parse headers using manual parsing (more reliable for raw headers)
-        headers = self.parse_raw_headers_properly(raw_headers)
+        """Main analysis function"""
+        parsed_headers = self.parse_raw_headers_properly(raw_headers)
         
-        # Extract basic info, handling both single values and lists
-        def get_header_value(key):
-            value = headers.get(key, 'N/A')
-            if isinstance(value, list):
-                return value[0] if value else 'N/A'
-            return value
-        
+        # Extract basic information
         basic_info = {
-            'subject': get_header_value('Subject'),
-            'message_id': get_header_value('Message-ID'),
-            'date': get_header_value('Date'),
-            'from': get_header_value('From'),
-            'to': get_header_value('To')
+            'subject': parsed_headers.get('Subject', 'Not found'),
+            'from': parsed_headers.get('From', 'Not found'),
+            'to': parsed_headers.get('To', 'Not found'),
+            'date': parsed_headers.get('Date', 'Not found'),
+            'message_id': parsed_headers.get('Message-ID', 'Not found')
         }
         
         # Parse Received headers - get all instances
         received_headers = []
-        if 'Received' in headers:
-            received_value = headers['Received']
+        if 'Received' in parsed_headers:
+            received_value = parsed_headers['Received']
             if isinstance(received_value, list):
                 received_headers = received_value
             else:
@@ -355,196 +386,204 @@ class EmailHeaderAnalyzer:
         x_headers = {}
         other_headers = {}
         
-        for key, value in headers.items():
-            key_lower = key.lower()
-            if key_lower in self.security_headers:
-                security_headers[key] = value
-            elif key_lower.startswith('x-'):
-                x_headers[key] = value
-                self.x_headers.add(key_lower)
-            elif key_lower not in ['received', 'subject', 'message-id', 'date', 'from', 'to']:
-                other_headers[key] = value
+        for header_name, header_value in parsed_headers.items():
+            if header_name.startswith('X-'):
+                x_headers[header_name] = header_value
+            elif header_name in ['Authentication-Results', 'DKIM-Signature', 'Received-SPF', 'X-IronPort-AV', 'X-Trellix']:
+                security_headers[header_name] = header_value
+            elif header_name not in ['Subject', 'From', 'To', 'Date', 'Message-ID', 'Received']:
+                other_headers[header_name] = header_value
         
-        return {
+        # Debug information
+        debug_input = {
+            'input_length': len(raw_headers),
+            'line_count': len(raw_headers.split('\n')),
+            'contains_received': 'Received:' in raw_headers,
+            'contains_from': 'From:' in raw_headers,
+            'first_500_chars': raw_headers[:500]
+        }
+        
+        debug_info = {
+            'input_debug': debug_input,
+            'total_received_headers': len(received_headers),
+            'received_headers_sample': received_headers[:3] if received_headers else [],
+            'total_hops': len(hops),
+            'basic_info_found': {
+                'subject': 'Subject' in parsed_headers,
+                'from': 'From' in parsed_headers,
+                'date': 'Date' in parsed_headers,
+                'message_id': 'Message-ID' in parsed_headers,
+                'to': 'To' in parsed_headers
+            },
+            'total_headers_found': len(parsed_headers),
+            'sample_parsed_headers': list(parsed_headers.keys())[:10],
+            'hop_timestamps_sample': [
+                {
+                    'hop_number': i+1,
+                    'from': hop['from'],
+                    'by': hop['by'],
+                    'timestamp': hop['timestamp'],
+                    'delay': hop.get('delay_human', 'N/A')
+                }
+                for i, hop in enumerate(hops[:5])
+            ]
+        }
+        
+        result = {
             'basic_info': basic_info,
             'hops': hops,
             'security_headers': security_headers,
             'x_headers': x_headers,
-            'other_headers': other_headers
+            'other_headers': other_headers,
+            'debug': debug_info
         }
-    
-    def create_delay_visualization(self, hops: List[Dict]) -> str:
-        """Create a visualization of delays between hops"""
-        if not hops:
-            return ""
         
-        # Prepare data for visualization
-        hop_labels = []
-        delays = []
-        colors = []
+        # Add visualization
+        try:
+            visualization = self.create_visualization(hops)
+            result['visualization'] = visualization
+        except Exception as e:
+            result['visualization'] = None
+            result['visualization_error'] = str(e)
         
-        for i, hop in enumerate(hops):
-            hop_labels.append(f"Hop {i+1}<br>{hop['from']}<br>→ {hop['by']}")
-            
-            delay = hop.get('delay_seconds', 0)
-            if delay is None:
-                delay = 0
-            delays.append(delay)
-            
-            # Color coding based on delay
-            if delay <= 1:
-                colors.append('#28a745')  # Green - fast
-            elif delay <= 10:
-                colors.append('#ffc107')  # Yellow - moderate
-            elif delay <= 60:
-                colors.append('#fd7e14')  # Orange - slow
-            else:
-                colors.append('#dc3545')  # Red - very slow
-        
-        # Create bar chart
-        fig = go.Figure(data=[
-            go.Bar(
-                x=hop_labels,
-                y=delays,
-                marker_color=colors,
-                text=[hop.get('delay_human', 'N/A') for hop in hops],
-                textposition='auto',
-            )
-        ])
-        
-        fig.update_layout(
-            title='Email Routing Delays',
-            xaxis_title='Hops',
-            yaxis_title='Delay (seconds)',
-            yaxis_type='log',
-            template='plotly_white',
-            height=400,
-            margin=dict(l=50, r=50, t=50, b=100)
-        )
-        
-        return json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)
+        return result
 
 # Initialize analyzer
 analyzer = EmailHeaderAnalyzer()
 
+# HTML template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Email Header Analyzer</title>
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
     <style>
-        body { 
-            font-family: Arial, sans-serif; 
-            margin: 20px; 
-            background-color: #f5f5f5;
-        }
-        .container { 
-            max-width: 1200px; 
-            margin: 0 auto; 
-            background-color: white;
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
             padding: 20px;
+            background-color: #f8f9fa;
+        }
+        
+        .container {
+            background: white;
+            padding: 30px;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        h1 { 
-            color: #333; 
-            text-align: center; 
+        
+        h1 {
+            color: #2c3e50;
+            text-align: center;
             margin-bottom: 30px;
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
         }
-        h2 { 
-            color: #444; 
-            border-bottom: 2px solid #007bff; 
-            padding-bottom: 5px;
+        
+        .section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            border-left: 4px solid #3498db;
         }
-        textarea { 
-            width: 100%; 
-            height: 200px; 
-            font-family: monospace; 
-            font-size: 12px;
-            border: 1px solid #ddd;
+        
+        h2 {
+            color: #2c3e50;
+            margin-top: 0;
+            margin-bottom: 15px;
+        }
+        
+        textarea {
+            width: 100%;
+            height: 200px;
+            padding: 15px;
+            border: 2px solid #ddd;
             border-radius: 4px;
-            padding: 10px;
+            font-family: monospace;
+            font-size: 14px;
             resize: vertical;
+            box-sizing: border-box;
         }
-        button { 
-            background-color: #007bff; 
-            color: white; 
-            padding: 10px 20px; 
-            border: none; 
-            border-radius: 4px; 
+        
+        button {
+            background-color: #3498db;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
             cursor: pointer;
             font-size: 16px;
             margin-top: 10px;
         }
-        button:hover { 
-            background-color: #0056b3; 
+        
+        button:hover {
+            background-color: #2980b9;
         }
-        .section { 
-            margin-bottom: 30px; 
-        }
-        .hop { 
-            border: 1px solid #ddd; 
-            padding: 15px; 
-            margin-bottom: 10px; 
+        
+        .hop {
+            background-color: white;
+            padding: 15px;
+            margin-bottom: 15px;
             border-radius: 4px;
-            background-color: #f9f9f9;
+            border: 1px solid #ddd;
         }
-        .hop-header { 
-            font-weight: bold; 
-            color: #007bff;
-            margin-bottom: 10px;
-        }
-        .delay { 
-            color: #28a745; 
+        
+        .hop-header {
             font-weight: bold;
+            font-size: 18px;
+            color: #2c3e50;
+            margin-bottom: 10px;
+            padding-bottom: 5px;
+            border-bottom: 2px solid #3498db;
         }
-        .delay.slow { 
-            color: #ffc107; 
+        
+        .delay {
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 3px;
         }
-        .delay.very-slow { 
-            color: #dc3545; 
-        }
-        .basic-info { 
-            background-color: #e9ecef; 
-            padding: 15px; 
+        
+        .delay-fast { background-color: #d4edda; color: #155724; }
+        .delay-moderate { background-color: #fff3cd; color: #856404; }
+        .delay-slow { background-color: #f8d7da; color: #721c24; }
+        .delay-unknown { background-color: #e2e3e5; color: #6c757d; }
+        
+        .basic-info {
+            background-color: white;
+            padding: 15px;
             border-radius: 4px;
-            margin-bottom: 20px;
+            border: 1px solid #ddd;
         }
-        .basic-info div { 
-            margin-bottom: 8px; 
+        
+        .basic-info div {
+            margin-bottom: 8px;
         }
-        .header-item { 
-            background-color: #f8f9fa; 
-            padding: 10px; 
-            margin-bottom: 5px; 
-            border-radius: 4px;
-            border-left: 4px solid #007bff;
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #6c757d;
         }
-        .header-name { 
-            font-weight: bold; 
-            color: #495057;
-        }
-        .header-value { 
-            font-family: monospace; 
+        
+        code {
+            background-color: #f1f1f1;
+            padding: 2px 4px;
+            border-radius: 2px;
+            font-family: 'Courier New', monospace;
             font-size: 12px;
-            margin-top: 5px;
             word-break: break-all;
         }
-        .loading { 
-            text-align: center; 
-            color: #666; 
-            font-style: italic;
-        }
-        .error { 
-            color: #dc3545; 
-            background-color: #f8d7da; 
-            padding: 10px; 
-            border-radius: 4px;
-            margin-top: 10px;
-        }
-        #visualization { 
-            margin-top: 20px; 
+        
+        #visualization {
+            min-height: 400px;
+            width: 100%;
         }
     </style>
 </head>
@@ -559,86 +598,79 @@ HTML_TEMPLATE = """
         
         <div id="results" style="display: none;">
             <div class="section">
-                <h2>📋 Basic Information</h2>
-                <div id="basic-info" class="basic-info"></div>
+                <h2>📧 Basic Information</h2>
+                <div id="basic-info"></div>
             </div>
-            
-            <div class="section">
-                <h2>🔀 Routing Hops</h2>
-                <div id="hops"></div>
-            </div>
-            
+
             <div class="section">
                 <h2>📊 Delay Visualization</h2>
                 <div id="visualization"></div>
+                <div id="visualization-error" style="display: none; background-color: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 15px; border-radius: 4px; margin-top: 10px;">
+                    <strong>⚠️ Chart could not be loaded</strong><br>
+                    The visualization requires external resources from cdn.plot.ly. If you're behind a corporate proxy or firewall:<br>
+                    <ul style="margin: 10px 0;">
+                        <li>Have you accepted the Acceptable Use Policy (AUP) for external internet access?</li>
+                        <li>Is cdn.plot.ly blocked by your network security policy?</li>
+                        <li>Try refreshing the page after accepting any network access prompts</li>
+                    </ul>
+                    <small>The email analysis above is still fully functional - only the visual chart is affected.</small>
+                </div>
             </div>
-            
+
+            <div class="section">
+                <h2>🔄 Routing Hops</h2>
+                <div id="hops"></div>
+            </div>
+
             <div class="section">
                 <h2>🔒 Security Headers</h2>
                 <div id="security-headers"></div>
             </div>
-            
+
             <div class="section">
                 <h2>⚡ X-Headers</h2>
                 <div id="x-headers"></div>
             </div>
-            
+
             <div class="section">
                 <h2>📄 Other Headers</h2>
                 <div id="other-headers"></div>
             </div>
-            
+
             <div class="section">
                 <h2>🐛 Debug Information</h2>
                 <div id="debug-info"></div>
             </div>
         </div>
-        
+
         <div id="loading" class="loading" style="display: none;">
             Analyzing headers...
         </div>
-        
-        <div id="error" class="error" style="display: none;"></div>
     </div>
 
     <script>
-        function analyzeHeaders() {
-            const headers = document.getElementById('headers').value;
-            if (!headers.trim()) {
-                alert('Please paste email headers first!');
-                return;
-            }
-            
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('results').style.display = 'none';
-            document.getElementById('error').style.display = 'none';
-            
-            fetch('/analyze', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ headers: headers })
-            })
-            .then(response => response.json())
-            .then(data => {
-                document.getElementById('loading').style.display = 'none';
-                
-                if (data.error) {
-                    document.getElementById('error').textContent = data.error;
-                    document.getElementById('error').style.display = 'block';
-                    return;
-                }
-                
-                displayResults(data);
-            })
-            .catch(error => {
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('error').textContent = 'Error analyzing headers: ' + error.message;
-                document.getElementById('error').style.display = 'block';
-            });
+        function getDelayClass(delay_seconds) {
+            if (!delay_seconds || delay_seconds === 0) return 'delay-unknown';
+            if (delay_seconds < 0) return 'delay-unknown';
+            if (delay_seconds < 5) return 'delay-fast';
+            if (delay_seconds < 30) return 'delay-moderate';
+            return 'delay-slow';
         }
-        
+
+        function formatHeaders(headers) {
+            let html = '';
+            for (let [key, value] of Object.entries(headers)) {
+                if (Array.isArray(value)) {
+                    for (let item of value) {
+                        html += `<div><strong>${key}</strong><br>${item}</div>`;
+                    }
+                } else {
+                    html += `<div><strong>${key}</strong><br>${value}</div>`;
+                }
+            }
+            return html;
+        }
+
         function displayResults(data) {
             // Basic info
             const basicInfo = data.basic_info;
@@ -653,27 +685,7 @@ HTML_TEMPLATE = """
                 `;
             }
             
-            // Hops
-            const hopsElement = document.getElementById('hops');
-            if (hopsElement) {
-                const hopsHtml = data.hops.map((hop, index) => `
-                    <div class="hop">
-                        <div class="hop-header">Hop ${index + 1}</div>
-                        <div><strong>From:</strong> ${hop.from}</div>
-                        <div><strong>By:</strong> ${hop.by}</div>
-                        <div><strong>Protocol:</strong> ${hop.protocol}</div>
-                        <div><strong>Timestamp:</strong> ${hop.timestamp || 'N/A'}</div>
-                        <div><strong>Delay:</strong> <span class="delay ${getDelayClass(hop.delay_seconds)}">${hop.delay_human || 'N/A'}</span></div>
-                        <div style="margin-top: 10px; font-size: 12px; color: #666;">
-                            <strong>Full header:</strong><br>
-                            <code>${hop.full_line}</code>
-                        </div>
-                    </div>
-                `).join('');
-                hopsElement.innerHTML = hopsHtml;
-            }
-            
-            // Visualization with error handling
+            // Visualization FIRST - right after basic info
             const visualizationElement = document.getElementById('visualization');
             const visualizationErrorElement = document.getElementById('visualization-error');
             
@@ -693,6 +705,26 @@ HTML_TEMPLATE = """
                 if (visualizationErrorElement) {
                     visualizationErrorElement.style.display = 'block';
                 }
+            }
+            
+            // Hops SECOND - after visualization
+            const hopsElement = document.getElementById('hops');
+            if (hopsElement) {
+                const hopsHtml = data.hops.map((hop, index) => `
+                    <div class="hop">
+                        <div class="hop-header">Hop ${index + 1}</div>
+                        <div><strong>From:</strong> ${hop.from}</div>
+                        <div><strong>By:</strong> ${hop.by}</div>
+                        <div><strong>Protocol:</strong> ${hop.protocol}</div>
+                        <div><strong>Timestamp:</strong> ${hop.timestamp || 'N/A'}</div>
+                        <div><strong>Delay:</strong> <span class="delay ${getDelayClass(hop.delay_seconds)}">${hop.delay_human || 'N/A'}</span></div>
+                        <div style="margin-top: 10px; font-size: 12px; color: #666;">
+                            <strong>Full header:</strong><br>
+                            <code>${hop.full_line}</code>
+                        </div>
+                    </div>
+                `).join('');
+                hopsElement.innerHTML = hopsHtml;
             }
             
             // Security headers
@@ -731,29 +763,42 @@ HTML_TEMPLATE = """
                 resultsElement.style.display = 'block';
             }
         }
-        
-        function formatHeaders(headers) {
-            if (Object.keys(headers).length === 0) {
-                return '<div style="color: #666; font-style: italic;">No headers found in this category</div>';
+
+        function analyzeHeaders() {
+            const headers = document.getElementById('headers').value;
+            const loadingElement = document.getElementById('loading');
+            const resultsElement = document.getElementById('results');
+            
+            if (!headers.trim()) {
+                alert('Please paste email headers first');
+                return;
             }
             
-            return Object.entries(headers).map(([key, value]) => {
-                // Handle both single values and arrays
-                const displayValue = Array.isArray(value) ? value[0] : value;
-                return `
-                    <div class="header-item">
-                        <div class="header-name">${key}</div>
-                        <div class="header-value">${displayValue}</div>
-                    </div>
-                `;
-            }).join('');
-        }
-        
-        function getDelayClass(seconds) {
-            if (seconds === null || seconds === undefined) return '';
-            if (seconds > 60) return 'very-slow';
-            if (seconds > 10) return 'slow';
-            return '';
+            loadingElement.style.display = 'block';
+            resultsElement.style.display = 'none';
+            
+            // Send to Flask backend
+            fetch('/analyze', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({headers: headers})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert(`Error analyzing headers: ${data.error}`);
+                } else {
+                    displayResults(data);
+                }
+            })
+            .catch(error => {
+                alert(`Error analyzing headers: ${error.message}`);
+            })
+            .finally(() => {
+                loadingElement.style.display = 'none';
+            });
         }
     </script>
 </body>
@@ -767,73 +812,19 @@ def index():
 @app.route('/analyze', methods=['POST'])
 def analyze():
     try:
-        data = request.json
+        data = request.get_json()
         headers = data.get('headers', '')
         
         if not headers:
-            return jsonify({'error': 'No headers provided'})
+            return jsonify({'error': 'No headers provided'}), 400
         
-        # Debug: Log first 500 characters of what we received
-        debug_input = {
-            'input_length': len(headers),
-            'first_500_chars': headers[:500],
-            'contains_received': 'Received:' in headers,
-            'contains_from': 'From:' in headers,
-            'line_count': len(headers.split('\n'))
-        }
-        
-        # Analyze headers
         result = analyzer.analyze_headers(headers)
-        
-        # Add debug information
-        parsed_headers = analyzer.parse_raw_headers_properly(headers)
-        received_headers = []
-        if 'Received' in parsed_headers:
-            received_value = parsed_headers['Received']
-            if isinstance(received_value, list):
-                received_headers = received_value
-            else:
-                received_headers = [received_value]
-        
-        debug_info = {
-            'input_debug': debug_input,
-            'total_received_headers': len(received_headers),
-            'received_headers_sample': received_headers[:3] if received_headers else [],
-            'total_hops': len(result['hops']),
-            'basic_info_found': {
-                'subject': 'Subject' in parsed_headers,
-                'from': 'From' in parsed_headers,
-                'date': 'Date' in parsed_headers,
-                'message_id': 'Message-ID' in parsed_headers,
-                'to': 'To' in parsed_headers
-            },
-            'total_headers_found': len(parsed_headers),
-            'sample_parsed_headers': list(parsed_headers.keys())[:10],
-            'hop_timestamps_sample': [
-                {
-                    'hop_number': i+1,
-                    'from': hop['from'],
-                    'by': hop['by'],
-                    'timestamp': hop['timestamp'],
-                    'delay': hop.get('delay_human', 'N/A')
-                }
-                for i, hop in enumerate(result['hops'][:5])
-            ]
-        }
-        
-        result['debug'] = debug_info
-        
-        # Create visualization
-        visualization = analyzer.create_delay_visualization(result['hops'])
-        result['visualization'] = visualization
-        
         return jsonify(result)
-    
+        
     except Exception as e:
-        import traceback
-        return jsonify({'error': f'Error analyzing headers: {str(e)}', 'traceback': traceback.format_exc()})
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    import os
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5000)
+
+
